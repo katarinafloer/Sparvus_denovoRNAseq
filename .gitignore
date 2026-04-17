@@ -7,6 +7,9 @@
 # Allow only qmd files
 !*.qmd
 
+# Allow shell scripts
+!*.sh
+
 # Keep this file
 !.gitignore*
 * > .gitignore.qmd
