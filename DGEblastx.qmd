@@ -1,0 +1,311 @@
+---
+title: "DGEblastx"
+format: html
+---
+```{r}
+library(tximport)
+library(DESeq2)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+library(ggrepel)
+library(dplyr)
+```
+
+# Diamond
+```{r}
+diamondx <- read.delim(
+  "blastx/diamond_swissprot.tsv",
+  header = FALSE,
+  sep = "\t",
+  stringsAsFactors = FALSE
+)
+
+colnames(diamondx) <- c(
+  "qseqid","sseqid","pident","align_len","mismatch","gapopen",
+  "qstart","qend","sstart","send","evalue","bitscore","stitle"
+)
+
+# remove peptide suffix: .p1, .p2, etc.
+diamondx$transcript_id <- sub("\\.p[0-9]+$", "", diamondx$qseqid)
+```
+
+
+```{r}
+gtm <- read.delim(
+  "trinity_out_dir.Trinity.fasta.gene_trans_map",
+  header = FALSE,
+  sep = "\t",
+  stringsAsFactors = FALSE
+)
+
+colnames(gtm) <- c("gene_id", "transcript_id")
+
+diamond2 <- merge(diamondx, gtm, by = "transcript_id", all.x = TRUE)
+
+# keep best hit per gene by bitscore, then by evalue
+diamond2 <- diamond2[order(diamond2$gene_id, -diamond2$bitscore, diamond2$evalue), ]
+diamond_gene <- diamond2[!duplicated(diamond2$gene_id), ]
+
+# optional: pull a cleaner gene symbol from GN=
+diamond_gene$gene_symbol <- ifelse(
+  grepl(" GN=", diamond_gene$stitle),
+  sub(".* GN=([^ ]+).*", "\\1", diamond_gene$stitle),
+  NA
+)
+```
+
+
+```{r}
+write.csv(
+  diamond_gene,
+  "blastxdiamond_gene_annotation_v1.csv",
+  row.names = FALSE
+)
+```
+
+# Results 
+# Merge flutamide_effect_F103vsC103_DESeq2_results
+```{r}
+res <- read.csv(
+  "results/flutamide_effect_F103vsC103_DESeq2_results.csv",
+  row.names = 1,
+  stringsAsFactors = FALSE
+)
+
+res$gene_id <- rownames(res)
+
+annot <- read.csv(
+  "blastxdiamond_gene_annotation_v1.csv",
+  stringsAsFactors = FALSE
+)
+
+res_annot <- merge(res, annot, by = "gene_id", all.x = TRUE)
+
+write.csv(
+  res_annot,
+  "blastxflutamide_effect_F103vsC103_DESeq2_results_annotated.csv",
+  row.names = FALSE
+)
+```
+
+```{r}
+sum(!is.na(diamond_gene$gene_symbol))
+nrow(diamond_gene)
+```
+```{r}
+sum(!is.na(res_annot$stitle))
+```
+
+#Significant flutamide_effect_F103vsC103
+```{r}
+res_sig <- subset(
+  res,
+  padj < 0.05 & abs(log2FoldChange) > 1 
+)
+
+sig_annot <- subset(
+  res_annot,
+  padj < 0.05 &  !is.na(res_annot$gene_symbol) & abs(log2FoldChange) > 1 
+)
+nrow(sig_annot)
+
+sig_annot_over <- subset(
+  res_annot,
+  padj < 0.05 &  !is.na(res_annot$gene_symbol) & log2FoldChange > 1 
+)
+
+nrow(sig_annot_over)
+
+sig_annot_under <- subset(
+  res_annot,
+  padj < 0.05 &  !is.na(res_annot$gene_symbol) & log2FoldChange < -1 
+)
+nrow(sig_annot_under)
+head(sig_annot_under)
+
+nrow(res_sig)
+nrow(sig_annot)
+
+write.csv(
+  sig_annot,
+  "blastxsig_annot_F103vsC103.csv",
+  row.names = FALSE
+)
+```
+
+```{r}
+# Volcano plot with gene labels
+res_df <- as.data.frame(res_annot) %>%
+  mutate(
+    significant = !is.na(padj) & padj < 0.05 & abs(log2FoldChange) > 1,
+    direction   = case_when(
+      significant & log2FoldChange > 1  ~ "up",
+      significant & log2FoldChange < -1 ~ "down",
+      TRUE ~ "ns"
+    ),
+    # only label significant genes that have a gene symbol
+    label = ifelse(significant & !is.na(gene_symbol), gene_symbol, NA)
+  )
+
+volcano <- ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj),
+                               color = direction)) +
+  geom_point(alpha = 0.5, size = 0.5) +
+  geom_text_repel(
+    aes(label = label),
+    size = 2.5,
+    max.overlaps = 20,
+    na.rm = TRUE,
+    box.padding = 0.3,
+    segment.color = "grey50",
+    show.legend = FALSE 
+  ) +
+  scale_color_manual(values = c("up"   = "#D6604D",
+                                "down" = "#2166AC",
+                                "ns"   = "grey70")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1),     linetype = "dashed") +
+  theme_bw() +
+  theme(legend.position = "none") +    # <-- add this
+  xlab("log2 Fold Change") +
+  ylab("-log10 adjusted p-value")
+base_dir <- "~/Desktop/Thesis"
+ggsave(file.path(base_dir, "figures", "blastxF103_C103_volcano_labeled.png"),
+       volcano, width = 4, height = 5)
+```
+
+# Annotation
+
+```{r}
+# HEAD
+res_flut_F103vsC103_HEAD <- read.csv(
+  "results/flutamide_F103vsC103_HEAD_DESeq2_results.csv",
+  row.names = 1,
+  stringsAsFactors = FALSE
+)
+
+res_flut_F103vsC103_HEAD$gene_id <- rownames(res_flut_F103vsC103_HEAD)
+
+res_res_flut_F103vsC103_HEAD_annot <- merge(res_flut_F103vsC103_HEAD, annot, by = "gene_id", all.x = TRUE)
+```
+
+
+```{r}
+# Body
+res_flut_F103vsC103_BODY <- read.csv(
+  "results/flutamide_F103vsC103_BODY_DESeq2_results.csv",
+  row.names = 1,
+  stringsAsFactors = FALSE
+)
+
+res_flut_F103vsC103_BODY$gene_id <- rownames(res_flut_F103vsC103_BODY)
+
+res_res_flut_F103vsC103_BODY_annot <- merge(res_flut_F103vsC103_BODY, annot, by = "gene_id", all.x = TRUE)
+
+sig_res_res_flut_F103vsC103_BODY_annot <- subset(
+  res_res_flut_F103vsC103_BODY_annot,
+  padj < 0.05 &  !is.na(res_res_flut_F103vsC103_BODY_annot$gene_symbol) & abs(log2FoldChange) > 1 
+)
+
+nrow(sig_res_res_flut_F103vsC103_BODY_annot)
+
+head(
+  sig_res_res_flut_F103vsC103_BODY_annot[order(sig_res_res_flut_F103vsC103_BODY_annot $padj),
+            c("gene_id","log2FoldChange","padj","gene_symbol","stitle")],
+  30
+)
+
+write.csv(
+  sig_res_res_flut_F103vsC103_HEAD_annot,
+  "sig_annot_F103vsC103_HEAD.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  sig_res_res_flut_F103vsC103_BODY_annot,
+  "sig_annot_F103vsC103_BODY.csv",
+  row.names = FALSE
+)
+```
+
+# Volcano
+```{r}
+# Volcano plot with gene labels
+res_df <- as.data.frame(res_res_flut_F103vsC103_HEAD_annot) %>%
+  mutate(
+    significant = !is.na(padj) & padj < 0.05 & abs(log2FoldChange) > 1,
+    direction   = case_when(
+      significant & log2FoldChange > 1  ~ "up",
+      significant & log2FoldChange < -1 ~ "down",
+      TRUE ~ "ns"
+    ),
+    # only label significant genes that have a gene symbol
+    label = ifelse(significant & !is.na(gene_symbol), gene_symbol, NA)
+  )
+
+volcano <- ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj),
+                               color = direction)) +
+  geom_point(alpha = 0.5, size = 0.5) +
+  geom_text_repel(
+    aes(label = label),
+    size = 2.5,
+    max.overlaps = 20,
+    na.rm = TRUE,
+    box.padding = 0.3,
+    segment.color = "grey50",
+    show.legend = FALSE 
+  ) +
+  scale_color_manual(values = c("up"   = "#D6604D",
+                                "down" = "#2166AC",
+                                "ns"   = "grey70")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1),     linetype = "dashed") +
+  theme_bw() +
+  theme(legend.position = "none") +    # <-- add this
+  xlab("log2 Fold Change") +
+  ylab("-log10 adjusted p-value")
+
+ggsave(file.path(base_dir, "figures", "F103_C103_HEAD_volcano_labeled.png"),
+       volcano, width = 2, height = 2)
+```
+
+```{r}
+# Volcano plot with gene labels
+res_df <- as.data.frame(res_res_flut_F103vsC103_BODY_annot) %>%
+  mutate(
+    significant = !is.na(padj) & padj < 0.05 & abs(log2FoldChange) > 1,
+    direction   = case_when(
+      significant & log2FoldChange > 1  ~ "up",
+      significant & log2FoldChange < -1 ~ "down",
+      TRUE ~ "ns"
+    ),
+    # only label significant genes that have a gene symbol
+    label = ifelse(significant & !is.na(gene_symbol), gene_symbol, NA)
+  )
+
+volcano <- ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj),
+                               color = direction)) +
+  geom_point(alpha = 0.5, size = 0.5) +
+  geom_text_repel(
+    aes(label = label),
+    size = 2.5,
+    max.overlaps = 20,
+    na.rm = TRUE,
+    box.padding = 0.3,
+    segment.color = "grey50",
+    show.legend = FALSE 
+  ) +
+  scale_color_manual(values = c("up"   = "#D6604D",
+                                "down" = "#2166AC",
+                                "ns"   = "grey70")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1),     linetype = "dashed") +
+  theme_bw() +
+  theme(legend.position = "none") +    # <-- add this
+  xlab("log2 Fold Change") +
+  ylab("-log10 adjusted p-value")
+
+ggsave(file.path(base_dir, "figures", "F103_C103_BODY_volcano_labeled.png"),
+       volcano, width = 2, height = 2)
+```
+

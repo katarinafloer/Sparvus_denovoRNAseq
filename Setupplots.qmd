@@ -1,0 +1,144 @@
+---
+title: "setupplots"
+format: html
+editor: visual
+---
+```{r}
+library(ggtext)
+library(ggplot2)
+```
+
+```{r}
+# ── boxes ──────────────────────────────────────────────────────────────────
+boxes <- data.frame(
+  x     = c(1.5,  4,    4,    7,    7,    4),
+  y     = c(5,    8,    3.5,  5.5,  1.5,  8),
+  xmin  = c(0.2,  2.8,  2.8,  5.8,  5.8,  2.8),
+  xmax  = c(2.8,  5.2,  5.2,  8.2,  8.2,  5.2),
+  ymin  = c(4.4,  7.4,  2.9,  4.9,  0.9,  7.4),
+  ymax  = c(5.6,  8.6,  4.1,  6.1,  2.1,  8.6),
+  label = c(
+    "**Communal tank**<br><span style='font-size:9pt'>n = 15 · Gosner 25–28</span>",
+    "**Baseline — n = 5**<br><span style='font-size:9pt'>DNA/RNA Shield · −80°C</span>",
+    "**Control tank**<br><span style='font-size:9pt'>n = 5 · EtOH 0.02% v/v</span>",
+    "**Control — n = 5**<br><span style='font-size:9pt'>DNA/RNA Shield · −80°C</span>",
+    "**Flutamide — n = 5**<br><span style='font-size:9pt'>DNA/RNA Shield · −80°C</span>",
+    "**Flutamide tank**<br><span style='font-size:9pt'>n = 5 · 200 µg/L in EtOH</span>"
+  ),
+  fill  = c("grey", "blue", "blue", "blue", "coral", "coral")
+)
+
+fill_colors <- c(
+  "grey"  = "#E8E8E8",
+  "blue"  = "#DDEEFF",
+  "coral" = "#FFE5DC"
+)
+border_colors <- c(
+  "grey"  = "#AAAAAA",
+  "blue"  = "#2166AC",
+  "coral" = "#D6604D"
+)
+
+# ── arrows ─────────────────────────────────────────────────────────────────
+arrows <- data.frame(
+  x    = c(2.8, 4,   4,   4,   7,   7),
+  xend = c(3.8, 4,   4,   5.8, 7,   7),
+  y    = c(5,   7.4, 7.4, 8,   4.9, 2.1),
+  yend = c(5,   6.1, 4.1, 8,   2.1, 0.9),  # dummy — replaced below
+  stringsAsFactors = FALSE
+)
+
+arrows <- data.frame(
+  x    = c(2.8, 4,    3,    5.2,  5.2),
+  xend = c(3.8, 4,    5.8,  5.8,  5.8),
+  y    = c(5.0, 7.35, 8.0,  5.5,  1.5),
+  yend = c(5.0, 6.15, 8.0,  6.1,  2.1),
+  label = c("", "", "", "", "")
+)
+
+# Rebuild cleanly
+arrows <- data.frame(
+  x    = c(2.8,  4.0,  3.0,  5.2,  5.2),
+  xend = c(3.85, 4.0,  5.75, 5.75, 5.75),
+  y    = c(5.0,  7.35, 8.0,  5.5,  1.5),
+  yend = c(5.0,  6.15, 8.0,  4.95, 2.15)
+)
+
+# ── timeline ───────────────────────────────────────────────────────────────
+timeline <- data.frame(
+  x     = c(0.5, 4.0, 7.5),
+  label = c("Day 0\nHatching", "Day 45\nGosner 25–28", "Day 103\nGosner 41"),
+  color = c("grey40", "#2166AC", "#D6604D")
+)
+
+# ── plot ───────────────────────────────────────────────────────────────────
+p <- ggplot() +
+  # Timeline
+  geom_segment(aes(x = 0.5, xend = 7.5, y = 9.8, yend = 9.8),
+               color = "grey60", linewidth = 0.6) +
+  geom_point(data = timeline, aes(x = x, y = 9.8, color = color), size = 4) +
+  geom_text(data = timeline, aes(x = x, y = 9.4, label = label, color = color),
+            size = 2.8, lineheight = 1.2, vjust = 1) +
+  scale_color_identity() +
+  # Boxes
+  geom_rect(data = boxes,
+            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = fill),
+            color = NA, alpha = 0.9) +
+  geom_rect(data = boxes,
+            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax,
+                color = fill),
+            fill = NA, linewidth = 0.6) +
+  scale_fill_manual(values = fill_colors)   +
+  scale_color_manual(values = border_colors) +
+  # Box labels
+  geom_richtext(data = boxes,
+                aes(x = x, y = y, label = label),
+                size = 3, fill = NA, label.color = NA,
+                lineheight = 1.4) +
+  # Arrows: communal → day 45 decision
+  annotate("segment", x = 2.8, xend = 3.85, y = 5, yend = 5,
+           arrow = arrow(length = unit(0.2, "cm"), type = "closed"),
+           color = "grey40", linewidth = 0.5) +
+  # Day 45 circle
+  annotate("point",  x = 4, y = 5, size = 8, color = "#2166AC", shape = 21,
+           fill = "white", stroke = 1.2) +
+  annotate("text",   x = 4, y = 5, label = "45", size = 2.5, color = "#2166AC") +
+  # Arrow up to baseline
+  annotate("segment", x = 4, xend = 4, y = 5.2, yend = 7.35,
+           arrow = arrow(length = unit(0.2, "cm"), type = "closed"),
+           color = "#2166AC", linewidth = 0.5) +
+  # Arrow down-left to control tank
+  annotate("segment", x = 3.8, xend = 2.85, y = 4.8, yend = 4.1,
+           arrow = arrow(length = unit(0.2, "cm"), type = "closed"),
+           color = "#2166AC", linewidth = 0.5) +
+  # Arrow down-right to flutamide tank
+  annotate("segment", x = 4.2, xend = 5.15, y = 4.8, yend = 4.1,
+           arrow = arrow(length = unit(0.2, "cm"), type = "closed"),
+           color = "#D6604D", linewidth = 0.5) +
+  # Remaining n=10 label
+  annotate("text", x = 4, y = 4.55, label = "n = 10 split equally",
+           size = 2.5, color = "grey40") +
+  # Control tank → control day103
+  annotate("segment", x = 2, xend = 6.2, y = 2.9, yend = 2.9,
+           color = "grey80", linewidth = 3, lineend = "round") +
+  annotate("text", x = 4, y = 2.9, label = "58 days exposure",
+           size = 2.3, color = "grey50") +
+  annotate("segment", x = 2, xend = 2, y = 2.85, yend = 2.15,
+           arrow = arrow(length = unit(0.2, "cm"), type = "closed"),
+           color = "#2166AC", linewidth = 0.5) +
+  annotate("segment", x = 6.2, xend = 6.2, y = 2.85, yend = 2.15,
+           arrow = arrow(length = unit(0.2, "cm"), type = "closed"),
+           color = "#D6604D", linewidth = 0.5) +
+  # Bottom note
+  annotate("text", x = 4, y = 0.4,
+           label = "All samples: head + body dissected separately → RNA extraction → sequencing",
+           size = 2.5, color = "grey40") +
+  coord_cartesian(xlim = c(0, 8.5), ylim = c(0.1, 10.2)) +
+  theme_void() +
+  theme(legend.position = "none",
+        plot.margin = margin(10, 10, 10, 10))
+
+ggsave(file.path(base_dir, "figures/experimental_design.png"),
+       p, width = 10, height = 8, dpi = 300)
+```
+

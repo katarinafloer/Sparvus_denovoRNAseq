@@ -1,0 +1,917 @@
+---
+title: "DGE"
+format: html
+editor: visual
+---
+
+```{r}
+#if (!require("BiocManager")) install.packages("BiocManager")
+#BiocManager::install(c("tximport", "DESeq2"))
+#install.packages(c("ggplot2", "pheatmap", "RColorBrewer", "ggrepel", "dplyr"))
+```
+
+```{r}
+# ============================================================
+# De novo RNAseq DGE Analysis
+# Flutamide experiment — Frog
+# tximport + DESeq2
+# ============================================================
+
+library(tximport)
+library(DESeq2)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+library(ggrepel)
+library(dplyr)
+```
+
+# 1. File paths
+
+```{r}
+# ============================================================
+# 1. File paths
+# ============================================================
+
+# Set base directory
+base_dir <- "~/Desktop/Thesis"
+
+# Sample names
+sample_names <- c(
+  "C103-2B", "C103-3B", "C103-4B", "C103-4H", "C103-5B", "C103-5H",
+  "C45-1B",  "C45-1H",  "C45-2B",  "C45-2H",  "C45-3B",  "C45-4B",
+  "C45-4H",  "C45-5B",  "C45-5H",
+  "F103-1B", "F103-1H", "F103-2B", "F103-2H", "F103-3B", "F103-3H",
+  "F103-4B", "F103-5B", "F103-5H"
+)
+
+# Paths to quant.sf files
+files <- file.path(base_dir, "salmon_quant_v1", sample_names, "quant.sf")
+names(files) <- sample_names
+
+# Verify all files exist
+stopifnot(all(file.exists(files)))
+cat("All 24 quant.sf files found\n")
+```
+
+```{r}
+#print(head(tx2gene))
+```
+
+
+# 2. Load transcript-to-gene map
+```{r}
+# ============================================================
+# 2. Load transcript-to-gene map
+# ============================================================
+
+#tx2gene <- read.table(
+#  file.path(base_dir, "trinity_out_dir.Trinity.fasta.gene_trans_map"),
+#  header = FALSE,
+#  col.names = c("gene_id", "transcript_id")
+#)
+
+# tximport expects transcript first, gene second
+#tx2gene <- tx2gene[, c("transcript_id", "gene_id")]
+
+#cat("tx2gene dimensions:", dim(tx2gene), "\n")
+#head(tx2gene)
+```
+
+```{r}
+tx2gene <- read.table(
+  "~/Desktop/Thesis/trinity_out_dir.Trinity.fasta.gene_trans_map",
+  header = FALSE,
+  col.names = c("gene_id", "transcript_id")
+)
+
+# tximport expects transcript first, gene second
+tx2gene <- tx2gene[, c("transcript_id", "gene_id")]
+
+head(tx2gene)
+dim(tx2gene)
+```
+
+
+# 3. Import with tximport
+```{r}
+# ============================================================
+# 3. Import with tximport
+# ============================================================
+
+txi <- tximport(
+  files,
+  type = "salmon",
+  tx2gene = tx2gene,
+  ignoreTxVersion = FALSE
+)
+
+cat("tximport complete\n")
+cat("Dimensions of count matrix:", dim(txi$counts), "\n")
+```
+
+# 4. Build sample metadata (colData)
+```{r}
+# ============================================================
+# 4. Build sample metadata (colData)
+# ============================================================
+
+colData <- data.frame(
+  sample    = sample_names,
+  treatment = factor(ifelse(grepl("^C", sample_names), "control", "flutamide"),
+                     levels = c("control", "flutamide")),
+  timepoint = factor(ifelse(grepl("45", sample_names), "day45", "day103"),
+                     levels = c("day45", "day103")),
+  tissue    = factor(ifelse(grepl("B$", sample_names), "body", "head"),
+                     levels = c("body", "head")),
+  row.names = sample_names
+)
+
+# Create group factor combining treatment and timepoint
+colData$group <- factor(
+  paste(colData$treatment, colData$timepoint, sep = "_"),
+  levels = c("control_day45", "control_day103", "flutamide_day103")
+)
+
+cat("\nSample metadata:\n")
+print(colData)
+```
+
+# 5. Create DESeq2 object
+```{r}
+# ============================================================
+# 5. Create DESeq2 object
+# ============================================================
+
+dds <- DESeqDataSetFromTximport(
+  txi,
+  colData = colData,
+  design  = ~ tissue + group
+)
+
+cat("\nDESeq2 object created\n")
+cat("Number of genes:", nrow(dds), "\n")
+```
+
+# 6. Pre-filtering
+```{r}
+# ============================================================
+# 6. Pre-filtering
+# ============================================================
+
+# Keep genes with at least 10 counts across all samples
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep, ]
+cat("Genes after filtering:", nrow(dds), "\n")
+```
+
+# 7. Run DESeq2
+```{r}
+# ============================================================
+# 7. Run DESeq2
+# ============================================================
+
+dds <- DESeq(dds)
+cat("\nDESeq2 complete\n")
+```
+
+# 8. Sample-level QC — PCA and clustering
+```{r}
+# ============================================================
+# 8. Sample-level QC — PCA and clustering
+# ============================================================
+
+# Variance stabilizing transformation for visualization
+vst <- vst(dds, blind = TRUE)
+
+# PCA plot
+pca_data <- plotPCA(vst, intgroup = c("group", "tissue"), returnData = TRUE, ntop = nrow(vst))
+percent_var <- round(100 * attr(pca_data, "percentVar"))
+
+pca_plot <- ggplot(pca_data, aes(x = PC1, y = PC2,
+                                  color = group,
+                                  shape = tissue,
+                                  label = name)) +
+  geom_point(size = 4) +
+  geom_text_repel(size = 3) +
+  xlab(paste0("PC1: ", percent_var[1], "% variance")) +
+  ylab(paste0("PC2: ", percent_var[2], "% variance")) +
+  scale_color_manual(values = c("control_day45"   = "#2166AC",
+                                "control_day103"  = "#92C5DE",
+                                "flutamide_day103" = "#D6604D")) +
+  theme_bw() 
+
+ggsave(file.path(base_dir, "figures/PCA_all_samples.png"),
+       pca_plot, width = 8, height = 6)
+cat("PCA plot saved\n")
+
+# Sample distance heatmap
+sample_dists <- dist(t(assay(vst)))
+sample_dist_matrix <- as.matrix(sample_dists)
+
+annotation_col <- data.frame(
+  group   = colData$group,
+  tissue  = colData$tissue,
+  row.names = rownames(colData)
+)
+
+pdf(file.path(base_dir, "figures/sample_distance_heatmap.pdf"),
+    width = 10, height = 8)
+pheatmap(sample_dist_matrix,
+         clustering_distance_rows = sample_dists,
+         clustering_distance_cols = sample_dists,
+         annotation_col = annotation_col,
+         color = colorRampPalette(rev(brewer.pal(9, "Blues")))(255),
+         main = "Sample distance heatmap")
+dev.off()
+cat("Sample distance heatmap saved\n")
+
+png(file.path(base_dir, "figures/sample_distance_heatmap.png"),
+    width = 1000, height = 800, res = 150)
+
+pheatmap(sample_dist_matrix,
+         clustering_distance_rows = sample_dists,
+         clustering_distance_cols = sample_dists,
+         annotation_col = annotation_col,
+         color = colorRampPalette(rev(brewer.pal(9, "Blues")))(255))
+
+dev.off()
+
+cat("Sample distance heatmap saved\n")
+```
+# no of PC
+```{r}
+# Your pca_data only has PC1 & PC2 by default — use prcomp directly
+pca_full <- prcomp(t(assay(vst)))
+summary(pca_full)               # shows variance explained for ALL PCs
+```
+
+
+```{r}
+# Max PCs = min(nsamples - 1, ngenes)
+ncol(vst)   # number of samples
+nrow(vst)   # number of genes
+# Max meaningful PCs = n_samples - 1
+```
+```{r}
+# Replicate exactly what plotPCA does internally
+rv <- rowVars(assay(vst))
+select <- order(rv, decreasing = TRUE)[1:500]
+pca_full <- prcomp(t(assay(vst)[select, ]))
+summary(pca_full)   # should now match 69% / 16%
+```
+
+# 9. Differential expression — planned contrasts
+```{r}
+# ============================================================
+# 9. Differential expression — planned contrasts
+# ============================================================
+
+# Make figures directory
+dir.create(file.path(base_dir, "figures"), showWarnings = FALSE)
+dir.create(file.path(base_dir, "results"), showWarnings = FALSE)
+
+# Function to run contrast, save results and volcano plot
+run_contrast <- function(dds, contrast, name, base_dir) {
+
+  res <- results(dds,
+                 contrast = contrast,
+                 alpha = 0.05)
+
+  res <- res[order(res$padj), ]
+  summary(res)
+
+  # Save results table
+  write.csv(as.data.frame(res),
+            file.path(base_dir, "results", paste0(name, "_DESeq2_results.csv")))
+
+  # Volcano plot
+  res_df <- as.data.frame(res) %>%
+    mutate(
+      significant = !is.na(padj) & padj < 0.05 & abs(log2FoldChange) > 1,
+      direction   = case_when(
+        significant & log2FoldChange > 1  ~ "up",
+        significant & log2FoldChange < -1 ~ "down",
+        TRUE ~ "ns"
+      )
+    )
+
+  volcano <- ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj),
+                                 color = direction)) +
+    geom_point(alpha = 0.5, size = 1) +
+    scale_color_manual(values = c("up" = "#D6604D",
+                                  "down" = "#2166AC",
+                                  "ns" = "grey70")) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+    theme_bw() +
+    ggtitle(name) +
+    xlab("log2 Fold Change") +
+    ylab("-log10 adjusted p-value")
+
+  ggsave(file.path(base_dir, "figures", paste0(name, "_volcano.pdf")),
+         volcano, width = 7, height = 5)
+
+  cat("\n---", name, "---\n")
+  cat("Total DEGs (padj < 0.05, |LFC| > 1):",
+      sum(!is.na(res$padj) & res$padj < 0.05 & abs(res$log2FoldChange) > 1), "\n")
+  cat("Upregulated:", sum(!is.na(res$padj) & res$padj < 0.05 & res$log2FoldChange > 1), "\n")
+  cat("Downregulated:", sum(!is.na(res$padj) & res$padj < 0.05 & res$log2FoldChange < -1), "\n")
+
+  return(res)
+}
+
+# Contrast 1: Flutamide effect (F103 vs C103) — PRIMARY
+res_flutamide <- run_contrast(
+  dds,
+  contrast = c("group", "flutamide_day103", "control_day103"),
+  name     = "flutamide_effect_F103vsC103",
+  base_dir = base_dir
+)
+
+# Contrast 2: Timepoint effect in controls (C103 vs C45)
+res_timepoint <- run_contrast(
+  dds,
+  contrast = c("group", "control_day103", "control_day45"),
+  name     = "timepoint_effect_C103vsC45",
+  base_dir = base_dir
+)
+
+# Contrast 3: Flutamide vs baseline (F103 vs C45)
+res_baseline <- run_contrast(
+  dds,
+  contrast = c("group", "flutamide_day103", "control_day45"),
+  name     = "flutamide_vs_baseline_F103vsC45",
+  base_dir = base_dir
+)
+
+# Contrast 4: Tissue effect (body vs head)
+res_tissue <- run_contrast(
+  dds,
+  contrast = c("tissue", "body", "head"),
+  name     = "tissue_effect_bodyvshead",
+  base_dir = base_dir
+)
+```
+
+# 10. Heatmap of top DEGs
+```{r}
+# ============================================================
+# 10. Heatmap of top DEGs
+# ============================================================
+
+# Top 50 DEGs from flutamide contrast
+top_genes <- rownames(res_flutamide)[1:50]
+
+mat <- assay(vst)[top_genes, ]
+mat <- mat - rowMeans(mat)
+
+annotation_col <- data.frame(
+  group  = colData$group,
+  tissue = colData$tissue,
+  row.names = rownames(colData)
+)
+
+pdf(file.path(base_dir, "figures/heatmap_top50_flutamide_DEGs.pdf"),
+    width = 12, height = 10)
+pheatmap(mat,
+         annotation_col = annotation_col,
+         show_rownames  = FALSE,
+         show_colnames  = TRUE,
+         color = colorRampPalette(c("#2166AC", "white", "#D6604D"))(255),
+         main  = "Top 50 DEGs — flutamide effect")
+dev.off()
+cat("Heatmap saved\n")
+```
+
+
+# 11. Save DESeq2 object
+```{r}
+# ============================================================
+# 11. Save DESeq2 object
+# ============================================================
+
+saveRDS(dds, file.path(base_dir, "results/dds_all_samples.rds"))
+saveRDS(vst, file.path(base_dir, "results/vst_all_samples.rds"))
+cat("\nDESeq2 object saved\n")
+cat("\nAnalysis complete!\n")
+cat("Results in:", file.path(base_dir, "results"), "\n")
+cat("Figures in:", file.path(base_dir, "figures"), "\n")
+```
+
+
+
+
+# Diamond
+```{r}
+diamond <- read.delim(
+  "diamond_swissprot.tsv",
+  header = FALSE,
+  sep = "\t",
+  stringsAsFactors = FALSE
+)
+
+colnames(diamond) <- c(
+  "qseqid","sseqid","pident","align_len","mismatch","gapopen",
+  "qstart","qend","sstart","send","evalue","bitscore","stitle"
+)
+
+# remove peptide suffix: .p1, .p2, etc.
+diamond$transcript_id <- sub("\\.p[0-9]+$", "", diamond$qseqid)
+```
+
+
+```{r}
+gtm <- read.delim(
+  "trinity_out_dir.Trinity.fasta.gene_trans_map",
+  header = FALSE,
+  sep = "\t",
+  stringsAsFactors = FALSE
+)
+
+colnames(gtm) <- c("gene_id", "transcript_id")
+
+diamond2 <- merge(diamond, gtm, by = "transcript_id", all.x = TRUE)
+
+# keep best hit per gene by bitscore, then by evalue
+diamond2 <- diamond2[order(diamond2$gene_id, -diamond2$bitscore, diamond2$evalue), ]
+diamond_gene <- diamond2[!duplicated(diamond2$gene_id), ]
+
+# optional: pull a cleaner gene symbol from GN=
+diamond_gene$gene_symbol <- ifelse(
+  grepl(" GN=", diamond_gene$stitle),
+  sub(".* GN=([^ ]+).*", "\\1", diamond_gene$stitle),
+  NA
+)
+```
+
+
+```{r}
+write.csv(
+  diamond_gene,
+  "diamond_gene_annotation_v1.csv",
+  row.names = FALSE
+)
+```
+
+# Results 
+# Merge flutamide_effect_F103vsC103_DESeq2_results
+```{r}
+res <- read.csv(
+  "results/flutamide_effect_F103vsC103_DESeq2_results.csv",
+  row.names = 1,
+  stringsAsFactors = FALSE
+)
+
+res$gene_id <- rownames(res)
+
+annot <- read.csv(
+  "diamond_gene_annotation_v1.csv",
+  stringsAsFactors = FALSE
+)
+
+res_annot <- merge(res, annot, by = "gene_id", all.x = TRUE)
+
+write.csv(
+  res_annot,
+  "flutamide_effect_F103vsC103_DESeq2_results_annotated.csv",
+  row.names = FALSE
+)
+```
+
+```{r}
+sum(!is.na(diamond_gene$gene_symbol))
+nrow(diamond_gene)
+```
+```{r}
+sum(!is.na(res_annot$stitle))
+```
+
+#Significant flutamide_effect_F103vsC103
+```{r}
+res_sig <- subset(
+  res,
+  padj < 0.05 & abs(log2FoldChange) > 1 
+)
+
+sig_annot <- subset(
+  res_annot,
+  padj < 0.05 &  !is.na(res_annot$gene_symbol) & abs(log2FoldChange) > 1 
+)
+
+nrow(res_sig)
+nrow(sig_annot)
+
+write.csv(
+  sig_annot,
+  "sig_annot_F103vsC103.csv",
+  row.names = FALSE
+)
+```
+
+```{r}
+# Volcano plot with gene labels
+res_df <- as.data.frame(res_annot) %>%
+  mutate(
+    significant = !is.na(padj) & padj < 0.05 & abs(log2FoldChange) > 1,
+    direction   = case_when(
+      significant & log2FoldChange > 1  ~ "up",
+      significant & log2FoldChange < -1 ~ "down",
+      TRUE ~ "ns"
+    ),
+    # only label significant genes that have a gene symbol
+    label = ifelse(significant & !is.na(gene_symbol), gene_symbol, NA)
+  )
+
+volcano <- ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj),
+                               color = direction)) +
+  geom_point(alpha = 0.5, size = 0.5) +
+  geom_text_repel(
+    aes(label = label),
+    size = 2.5,
+    max.overlaps = 20,
+    na.rm = TRUE,
+    box.padding = 0.3,
+    segment.color = "grey50",
+    show.legend = FALSE 
+  ) +
+  scale_color_manual(values = c("up"   = "#D6604D",
+                                "down" = "#2166AC",
+                                "ns"   = "grey70")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1),     linetype = "dashed") +
+  theme_bw() +
+  theme(legend.position = "none") +    # <-- add this
+  xlab("log2 Fold Change") +
+  ylab("-log10 adjusted p-value")
+
+ggsave(file.path(base_dir, "figures", "F103_C103_volcano_labeled.png"),
+       volcano, width = 4, height = 5)
+```
+
+
+```{r}
+head(
+  sig_annot[order(sig_annot$padj),
+            c("gene_id","log2FoldChange","padj","gene_symbol","stitle")],
+  30
+)
+
+gene_symbols_up_down_F103vsC103 <- unique(sig_annot$gene_symbol)
+
+write.table(
+  data.frame(gene_symbol = gene_symbols_up_down_F103vsC103),
+  file = "up_down_F103vsC103_symbols.tsv",
+  sep = "\t",
+  row.names = FALSE,
+  col.names = TRUE,
+  quote = FALSE
+)
+
+```
+```{r}
+# search for androgen receptor in all genes regardless of significance
+ar_genes <- res_annot[
+  grepl("androgen", res_annot$stitle, ignore.case = TRUE) |
+  grepl("\\bAR\\b", res_annot$gene_symbol, ignore.case = FALSE) |
+  grepl("androgen", res_annot$gene_symbol, ignore.case = TRUE),
+]
+
+nrow(ar_genes)
+
+ar_genes[, c("gene_id", "log2FoldChange", "padj", "gene_symbol", "stitle")]
+```
+
+```{r}
+# check known AR target genes
+ar_targets <- res_annot[
+  grepl("kallikrein|KLK|PSA|NKX3|FKBP5|TMPRSS2|SGK1|PPAP2a|
+         UGT2B|SARG|NDRG1|KLF", 
+        res_annot$gene_symbol, ignore.case = TRUE),
+]
+
+ar_targets[, c("gene_id", "log2FoldChange", "padj", "gene_symbol", "stitle")]
+```
+
+
+# body 
+```{r}
+# ============================================================
+# BODY SAMPLES ONLY — F103 vs C103
+# ============================================================
+
+dds_body <- dds[, dds$tissue == "body"]
+dds_body$group <- droplevels(dds_body$group)
+design(dds_body) <- ~ group
+
+keep_body <- rowSums(counts(dds_body)) >= 10
+dds_body <- dds_body[keep_body, ]
+dds_body <- DESeq(dds_body)
+
+res_flut_F103vsC103_BODY <- run_contrast(
+  dds_body,
+  contrast = c("group", "flutamide_day103", "control_day103"),
+  name     = "flutamide_F103vsC103_BODY",
+  base_dir = base_dir
+)
+```
+
+```{r}
+# Volcano plot with gene labels
+res_df <- as.data.frame(res_res_flut_F103vsC103_BODY_annot) %>%
+  mutate(
+    significant = !is.na(padj) & padj < 0.05 & abs(log2FoldChange) > 1,
+    direction   = case_when(
+      significant & log2FoldChange > 1  ~ "up",
+      significant & log2FoldChange < -1 ~ "down",
+      TRUE ~ "ns"
+    ),
+    # only label significant genes that have a gene symbol
+    label = ifelse(significant & !is.na(gene_symbol), gene_symbol, NA)
+  )
+
+volcano <- ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj),
+                               color = direction)) +
+  geom_point(alpha = 0.5, size = 0.5) +
+  geom_text_repel(
+    aes(label = label),
+    size = 2.5,
+    max.overlaps = 20,
+    na.rm = TRUE,
+    box.padding = 0.3,
+    segment.color = "grey50",
+    show.legend = FALSE 
+  ) +
+  scale_color_manual(values = c("up"   = "#D6604D",
+                                "down" = "#2166AC",
+                                "ns"   = "grey70")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1),     linetype = "dashed") +
+  theme_bw() +
+  theme(legend.position = "none") +    # <-- add this
+  xlab("log2 Fold Change") +
+  ylab("-log10 adjusted p-value")
+
+ggsave(file.path(base_dir, "figures", "F103_C103_BODY_volcano_labeled.png"),
+       volcano, width = 2, height = 2)
+
+```
+
+
+#head 
+```{r}
+# ============================================================
+# HEAD SAMPLES ONLY — F103 vs C103
+# ============================================================
+
+dds_head <- dds[, dds$tissue == "head"]
+dds_head$group <- droplevels(dds_head$group)
+design(dds_head) <- ~ group
+
+keep_head <- rowSums(counts(dds_head)) >= 10
+dds_head <- dds_head[keep_head, ]
+dds_head <- DESeq(dds_head)
+
+res_flut_F103vsC103_HEAD <- run_contrast(
+  dds_head,
+  contrast = c("group", "flutamide_day103", "control_day103"),
+  name     = "flutamide_F103vsC103_HEAD",
+  base_dir = base_dir
+)
+
+
+```
+
+```{r}
+res_flut_F103vsC103_BODY <- read.csv(
+  "results/flutamide_F103vsC103_BODY_DESeq2_results.csv",
+  row.names = 1,
+  stringsAsFactors = FALSE
+)
+
+res_flut_F103vsC103_BODY$gene_id <- rownames(res_flut_F103vsC103_BODY)
+
+res_res_flut_F103vsC103_BODY_annot <- merge(res_flut_F103vsC103_BODY, annot, by = "gene_id", all.x = TRUE)
+
+sig_res_res_flut_F103vsC103_BODY_annot <- subset(
+  res_res_flut_F103vsC103_BODY_annot,
+  padj < 0.05 &  !is.na(res_res_flut_F103vsC103_BODY_annot$gene_symbol) & abs(log2FoldChange) > 1 
+)
+
+nrow(sig_res_res_flut_F103vsC103_BODY_annot)
+
+head(
+  sig_res_res_flut_F103vsC103_BODY_annot[order(sig_res_res_flut_F103vsC103_BODY_annot $padj),
+            c("gene_id","log2FoldChange","padj","gene_symbol","stitle")],
+  30
+)
+
+gene_symbols_res_flut_F103vsC103_BODY_annot <- unique(sig_res_res_flut_F103vsC103_BODY_annot$gene_symbol)
+
+write.table(
+  data.frame(gene_symbol = gene_symbols_res_flut_F103vsC103_BODY_annot),
+  file = "res_flut_F103vsC103_BODY.tsv",
+  sep = "\t",
+  row.names = FALSE,
+  col.names = TRUE,
+  quote = FALSE
+)
+```
+
+## HEAD
+```{r}
+res_flut_F103vsC103_HEAD <- read.csv(
+  "results/flutamide_F103vsC103_HEAD_DESeq2_results.csv",
+  row.names = 1,
+  stringsAsFactors = FALSE
+)
+
+res_flut_F103vsC103_HEAD$gene_id <- rownames(res_flut_F103vsC103_HEAD)
+
+res_res_flut_F103vsC103_HEAD_annot <- merge(res_flut_F103vsC103_HEAD, annot, by = "gene_id", all.x = TRUE)
+
+sig_res_res_flut_F103vsC103_HEAD_annot <- subset(
+  res_res_flut_F103vsC103_HEAD_annot,
+  padj < 0.05 &  !is.na(res_res_flut_F103vsC103_HEAD_annot$gene_symbol) & abs(log2FoldChange) > 1 
+)
+
+nrow(sig_res_res_flut_F103vsC103_HEAD_annot)
+
+head(
+  sig_res_res_flut_F103vsC103_HEAD_annot[order(sig_res_res_flut_F103vsC103_HEAD_annot $padj),
+            c("gene_id","log2FoldChange","padj","gene_symbol","stitle")],
+  30
+)
+
+gene_symbols_res_flut_F103vsC103_HEAD_annot <- unique(sig_res_res_flut_F103vsC103_HEAD_annot$gene_symbol)
+
+write.table(
+  data.frame(gene_symbol = gene_symbols_res_flut_F103vsC103_HEAD_annot),
+  file = "res_flut_F103vsC103_HEAD.tsv",
+  sep = "\t",
+  row.names = FALSE,
+  col.names = TRUE,
+  quote = FALSE
+)
+
+write.csv(
+  sig_res_res_flut_F103vsC103_HEAD_annot,
+  "sig_annot_F103vsC103_HEAD.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  sig_res_res_flut_F103vsC103_BODY_annot,
+  "sig_annot_F103vsC103_BODY.csv",
+  row.names = FALSE
+)
+
+###
+res_flut_F103vsC103_HEAD_sig <- subset(
+  res_flut_F103vsC103_HEAD,
+  padj < 0.05 & abs(log2FoldChange) > 1 
+)
+
+nrow(res_flut_F103vsC103_HEAD_sig)
+nrow(sig_res_res_flut_F103vsC103_HEAD_annot)
+
+###
+res_flut_F103vsC103_BODY_sig <- subset(
+  res_flut_F103vsC103_BODY,
+  padj < 0.05 & abs(log2FoldChange) > 1 
+)
+
+nrow(res_flut_F103vsC103_BODY_sig)
+nrow(sig_res_res_flut_F103vsC103_BODY_annot)
+
+
+
+```
+
+```{r}
+# Volcano plot with gene labels
+res_df <- as.data.frame(res_res_flut_F103vsC103_HEAD_annot) %>%
+  mutate(
+    significant = !is.na(padj) & padj < 0.05 & abs(log2FoldChange) > 1,
+    direction   = case_when(
+      significant & log2FoldChange > 1  ~ "up",
+      significant & log2FoldChange < -1 ~ "down",
+      TRUE ~ "ns"
+    ),
+    # only label significant genes that have a gene symbol
+    label = ifelse(significant & !is.na(gene_symbol), gene_symbol, NA)
+  )
+
+volcano <- ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj),
+                               color = direction)) +
+  geom_point(alpha = 0.5, size = 0.5) +
+  geom_text_repel(
+    aes(label = label),
+    size = 2.5,
+    max.overlaps = 20,
+    na.rm = TRUE,
+    box.padding = 0.3,
+    segment.color = "grey50",
+    show.legend = FALSE 
+  ) +
+  scale_color_manual(values = c("up"   = "#D6604D",
+                                "down" = "#2166AC",
+                                "ns"   = "grey70")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1),     linetype = "dashed") +
+  theme_bw() +
+  theme(legend.position = "none") +    # <-- add this
+  xlab("log2 Fold Change") +
+  ylab("-log10 adjusted p-value")
+
+ggsave(file.path(base_dir, "figures", "F103_C103_HEAD_volcano_labeled.png"),
+       volcano, width = 2, height = 2)
+```
+
+
+```{r}
+head(
+  sig_res_res_flut_F103vsC103_HEAD_annot[
+    order(sig_res_res_flut_F103vsC103_HEAD_annot$padj),
+    c("gene_id","log2FoldChange","padj","gene_symbol","stitle")],
+  33
+)
+```
+
+
+```{r}
+# go back to the pre-subset annotated dataframe
+all_sig_head <- subset(
+  res_res_flut_F103vsC103_HEAD_annot,  # this is BEFORE the gene_symbol filter
+  padj < 0.05 & abs(log2FoldChange) > 1
+)
+
+nrow(all_sig_head)  # should be 33
+
+head(
+  all_sig_head[order(all_sig_head$padj),
+               c("gene_id","log2FoldChange","padj","gene_symbol","stitle")],
+  33
+)
+```
+
+# Final HEAD BODY tablestables
+
+```{r}
+
+res_flut_F103vsC103_HEAD <- read.csv(
+  "results/flutamide_F103vsC103_HEAD_DESeq2_results.csv",
+  row.names = 1,
+  stringsAsFactors = FALSE
+)
+
+res <- read.csv(
+  "results/flutamide_effect_F103vsC103_DESeq2_results.csv",
+  row.names = 1,
+  stringsAsFactors = FALSE
+)
+
+res$gene_id <- rownames(res)
+
+annot <- read.csv(
+  "diamond_gene_annotation_v1.csv",
+  stringsAsFactors = FALSE
+)
+
+res_annot <- merge(res, annot, by = "gene_id", all.x = TRUE)
+
+write.csv(
+  res_annot,
+  "flutamide_effect_F103vsC103_DESeq2_results_annotated.csv",
+  row.names = FALSE
+)
+```
+
+```{r}
+sum(!is.na(diamond_gene$gene_symbol))
+nrow(diamond_gene)
+```
+```{r}
+sum(!is.na(res_annot$stitle))
+```
+
+#Significant flutamide_effect_F103vsC103
+```{r}
+res_sig <- subset(
+  res,
+  padj < 0.05 & abs(log2FoldChange) > 1 
+)
+
+sig_annot <- subset(
+  res_annot,
+  padj < 0.05 &  !is.na(res_annot$gene_symbol) & abs(log2FoldChange) > 1 
+)
+
+nrow(res_sig)
+nrow(sig_annot)
+
+write.csv(
+  sig_annot,
+  "sig_annot_F103vsC103.csv",
+  row.names = FALSE
+)

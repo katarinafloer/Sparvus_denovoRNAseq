@@ -1,0 +1,14 @@
+# Ignore everything
+*
+
+# Allow folders
+!*/
+
+# Allow only qmd files
+!*.qmd
+
+# Keep this file
+!.gitignore*
+* > .gitignore.qmd
+!README.md
+!.gitignore

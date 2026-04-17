@@ -1,0 +1,225 @@
+---
+title: "ARE"
+format: html
+editor: visual
+---
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install(c(
+  "biomaRt",
+  "GenomicRanges",
+  "JASPAR2022",
+  "TFBSTools",
+  "motifmatchr",
+  "BSgenome.Hsapiens.UCSC.hg38"
+))
+
+library(biomaRt)
+library(GenomicRanges)
+library(JASPAR2022)
+library(TFBSTools)
+library(motifmatchr)
+library(BSgenome.Hsapiens.UCSC.hg38)
+```
+
+
+```{r}
+your_gene_list <- toupper(c(
+  "GAP",      # confirm this
+  "CHD7",
+  "DGKQ",
+  "NIM1K",
+  "RPS11",
+  "UREC1",    # confirm this
+  "RPL8",
+  "RPS18",
+  "RPLP0",
+  "RPS7",
+  "RPL12",
+  "ABT",      # confirm this
+  "RPS10",
+  "UBB",
+  "RPL17",
+  "FASN",
+  "FABP6",
+  "RBP7",
+  "WNK3",
+  "ARF1",
+  "PLBD2",
+  "HSPB11",
+  "AHSG"
+))
+
+# Standardise to uppercase (BioMart expects this for human)
+your_gene_list <- toupper(your_gene_list)
+```
+
+```{r}
+# Connect to Ensembl
+#mart_sparvus <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+mart_sparvus <- useMart("ensembl", 
+                       dataset = "hsapiens_gene_ensembl",
+                       host = "https://useast.ensembl.org")  # US mirror
+
+# If you have gene symbols
+human_genes <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol"),
+  filters = "hgnc_symbol",
+  values = your_gene_list, # your vector of S. parvus gene names/symbols
+  mart = mart_sparvus
+)
+```
+
+```{r}
+mart_human <- useMart("ensembl", 
+                       dataset = "hsapiens_gene_ensembl",
+                       host = "https://useast.ensembl.org")  # US mirror
+
+# Get TSS coordinates
+tss <- getBM(
+  attributes = c("ensembl_gene_id", 
+                 "hgnc_symbol",
+                 "chromosome_name",
+                 "transcription_start_site", 
+                 "strand"),
+  filters = "hgnc_symbol",
+  values = human_genes$hgnc_symbol,
+  mart = mart_human
+)
+
+# Keep standard chromosomes only
+tss <- tss[tss$chromosome_name %in% c(1:22, "X", "Y"), ]
+
+# Build promoter ranges (2000bp upstream, 200bp downstream of TSS)
+promoter_ranges <- GRanges(
+  seqnames = paste0("chr", tss$chromosome_name),
+  ranges = IRanges(
+    start = ifelse(tss$strand == 1,
+                   tss$transcription_start_site - 2000,
+                   tss$transcription_start_site - 200),
+    end = ifelse(tss$strand == 1,
+                 tss$transcription_start_site + 200,
+                 tss$transcription_start_site + 2000)
+  ),
+  strand = ifelse(tss$strand == 1, "+", "-"),
+  gene = tss$hgnc_symbol
+)
+```
+
+```{r}
+genome <- BSgenome.Hsapiens.UCSC.hg38
+
+sequences <- getSeq(genome, promoter_ranges)
+names(sequences) <- promoter_ranges$gene
+```
+
+```{r}
+library(JASPAR2022)
+library(TFBSTools)
+
+# Retrieve all three AR motifs
+motifs <- getMatrixSet(
+  JASPAR2022,
+  list(ID = c("MA0007.1", "MA0007.2", "MA0007.3"))
+)
+
+# View basic info for each
+motifs
+
+# View the position weight matrix for each
+#getPWM(motifs[["MA0007.1"]])
+motifs[["MA0007.1"]]
+
+getPWM(motifs[["MA0007.2"]])
+getPWM(motifs[["MA0007.3"]])
+
+# View consensus sequence
+consensusMatrix(motifs[["MA0007.1"]])
+
+# Get the name/TF associated with each motif
+name(motifs[["MA0007.1"]])
+name(motifs[["MA0007.2"]])
+name(motifs[["MA0007.3"]])
+```
+
+```{r}
+motifs <- getMatrixSet(
+  JASPAR2022,
+  list(ID = c("MA0007.1", "MA0007.2", "MA0007.3"))
+)
+```
+
+```{r}
+motif_hits <- matchMotifs(
+  motifs,
+  sequences,
+  out = "positions",
+  p.cutoff = 0.0001
+)
+
+# Convert to readable dataframe
+results <- do.call(rbind, lapply(names(motif_hits), function(motif) {
+  hits <- as.data.frame(motif_hits[[motif]])
+  hits$motif <- motif
+  hits$gene <- names(sequences)[hits$group]
+  return(hits)
+}))
+
+# View genes with at least one ARE hit
+ARE_genes <- unique(results$gene)
+cat("Genes with predicted AREs:", length(ARE_genes), "\n")
+print(ARE_genes)
+```
+
+```{r}
+write.csv(results, "ARE_hits_human.csv", row.names = FALSE)
+
+# Simple summary table
+summary_table <- as.data.frame(table(results$gene))
+colnames(summary_table) <- c("gene", "ARE_count")
+summary_table <- summary_table[order(-summary_table$ARE_count), ]
+write.csv(summary_table, "ARE_summary_human.csv", row.names = FALSE)
+```
+
+```{r}
+# Convert results to GRanges
+hits_gr <- GRanges(
+  seqnames = results$gene,
+  ranges = IRanges(start = results$start, end = results$end),
+  motif = results$motif,
+  gene = results$gene,
+  score = results$score
+)
+
+# Split by gene, reduce within each gene, then count
+hits_by_gene <- split(hits_gr, results$gene)
+reduced_by_gene <- lapply(hits_by_gene, reduce)
+
+# Count unique non-overlapping AREs per gene
+unique_counts <- data.frame(
+  gene = names(reduced_by_gene),
+  unique_ARE_count = sapply(reduced_by_gene, length)
+)
+
+# Sort by count
+unique_counts <- unique_counts[order(-unique_counts$unique_ARE_count), ]
+print(unique_counts)
+```
+```{r}
+# Get maximum motif score per gene
+max_scores <- aggregate(score ~ gene, data = results, FUN = max)
+colnames(max_scores) <- c("gene", "max_motif_score")
+
+# Merge with your unique counts table
+final_table <- merge(unique_counts, max_scores, by = "gene")
+
+# Sort by unique ARE count
+final_table <- final_table[order(-final_table$unique_ARE_count), ]
+
+print(final_table)
+write.csv(final_table, "ARE_final_table.csv", row.names = FALSE)
+```
+
